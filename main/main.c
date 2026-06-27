@@ -293,7 +293,7 @@ void check_ota_task(void *pvParameter) {
 
     esp_http_client_config_t config = {
         .url = check_url,
-        .cert_pem = (const char *)server_cert_pem_start,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .method = HTTP_METHOD_GET,
         .timeout_ms = 10000,
     };
@@ -347,7 +347,7 @@ void check_ota_task(void *pvParameter) {
 
                     esp_http_client_config_t ota_client_config = {
                         .url = fw_url->valuestring,
-                        .cert_pem = (const char *)server_cert_pem_start,
+                        .crt_bundle_attach = esp_crt_bundle_attach,
                         .keep_alive_enable = true,
                         .timeout_ms = 60000,
                     };
