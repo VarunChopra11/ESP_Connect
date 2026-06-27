@@ -14,6 +14,7 @@
 #include "wifi_provisioning/scheme_ble.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
+#include "esp_crt_bundle.h"
 #include "esp_ota_ops.h"
 #include "cJSON.h"
 #include "device_state_manager.h"
