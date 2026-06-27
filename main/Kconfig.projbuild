@@ -1,0 +1,13 @@
+menu "MQTT Configuration"
+    config MQTT_BROKER_USERNAME
+        string "MQTT Username"
+        default "esp32_device"
+        help
+            The username used to authenticate with the Mosquitto MQTT broker.
+
+    config MQTT_BROKER_PASSWORD
+        string "MQTT Password"
+        default "SuperSecretIoT123"
+        help
+            The password used to authenticate with the Mosquitto MQTT broker.
+endmenu

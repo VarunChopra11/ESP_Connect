@@ -55,13 +55,15 @@ static bool smart_home_started = false;
 extern const uint8_t server_cert_pem_start[] asm("_binary_server_root_ca_pem_start");
 extern const uint8_t server_cert_pem_end[]   asm("_binary_server_root_ca_pem_end");
 
+// --- Global State: Binding Token received over BLE custom endpoint ---
+static char g_binding_token[64] = {0};
+
 // --- Prototypes ---
 void check_ota_task(void *pvParameter);
 void start_ble_provisioning(void);
-static esp_err_t get_or_create_pop(char *out_pop, size_t out_len);
+static esp_err_t get_pop_from_nvs(char *out_pop, size_t out_len);
 static void build_service_name(char *out_name, size_t out_len, const uint8_t mac[6]);
-static void generate_random_pop(char *out_pop, size_t out_len);
-static void start_smart_home_services_once(void);
+static void start_smart_home_services_once(const char *binding_token);
 
 // --- Button Fallback Logic ---
 static void button_timer_cb(TimerHandle_t xTimer) {
@@ -109,54 +111,68 @@ static void build_service_name(char *out_name, size_t out_len, const uint8_t mac
     );
 }
 
-static void generate_random_pop(char *out_pop, size_t out_len) {
-    static const char alphabet[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    const size_t pop_len = PROV_POP_LEN - 1;
-    const size_t alphabet_len = sizeof(alphabet) - 1;
-
-    if (out_len < PROV_POP_LEN) {
-        return;
-    }
-
-    for (size_t i = 0; i < pop_len; i++) {
-        out_pop[i] = alphabet[esp_random() % alphabet_len];
-    }
-    out_pop[pop_len] = '\0';
-}
-
-static esp_err_t get_or_create_pop(char *out_pop, size_t out_len) {
+/*
+ * get_pop_from_nvs - Reads the factory-flashed PoP PIN from NVS.
+ * If the key is absent (factory-faulty device), logs a fatal error and aborts
+ * to prevent the device from entering provisioning mode with no valid PIN.
+ */
+static esp_err_t get_pop_from_nvs(char *out_pop, size_t out_len) {
     if (!out_pop || out_len < PROV_POP_LEN) {
         return ESP_ERR_INVALID_ARG;
     }
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(PROV_POP_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = nvs_open(PROV_POP_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to open NVS prov namespace: %s", esp_err_to_name(err));
         return err;
     }
 
     size_t required_len = out_len;
     err = nvs_get_str(handle, PROV_POP_KEY, out_pop, &required_len);
-    if (err == ESP_OK) {
-        nvs_close(handle);
-        return ESP_OK;
-    }
-
-    if (err != ESP_ERR_NVS_NOT_FOUND) {
-        nvs_close(handle);
-        return err;
-    }
-
-    generate_random_pop(out_pop, out_len);
-    err = nvs_set_str(handle, PROV_POP_KEY, out_pop);
-    if (err == ESP_OK) {
-        err = nvs_commit(handle);
-    }
     nvs_close(handle);
+
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGE(TAG, "FATAL: Factory PoP PIN not found in NVS. "
+                      "This device was not properly provisioned at the factory. Halting.");
+        abort();
+    }
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read PoP from NVS: %s", esp_err_to_name(err));
+    }
+
     return err;
 }
 
-static void start_smart_home_services_once(void) {
+/*
+ * custom_data_handler - BLE provisioning custom endpoint handler.
+ * Receives the short-lived Binding Token from the Web App during the
+ * Wi-Fi provisioning handshake and stores it in g_binding_token.
+ */
+static esp_err_t custom_data_handler(uint32_t session_id,
+                                     const uint8_t *inbuf, ssize_t inlen,
+                                     uint8_t **outbuf, ssize_t *outlen,
+                                     void *priv_data) {
+    (void)session_id;
+    (void)priv_data;
+
+    if (inbuf && inlen > 0) {
+        size_t copy_len = (size_t)inlen < sizeof(g_binding_token) - 1
+                          ? (size_t)inlen
+                          : sizeof(g_binding_token) - 1;
+        memcpy(g_binding_token, inbuf, copy_len);
+        g_binding_token[copy_len] = '\0';
+        ESP_LOGI(TAG, "Binding Token received via BLE (%d bytes)", (int)copy_len);
+    }
+
+    /* No response payload needed for this endpoint */
+    *outbuf  = NULL;
+    *outlen  = 0;
+    return ESP_OK;
+}
+
+static void start_smart_home_services_once(const char *binding_token) {
     if (smart_home_started) {
         return;
     }
@@ -167,7 +183,7 @@ static void start_smart_home_services_once(void) {
         return;
     }
 
-    err = mqtt_bridge_start();
+    err = mqtt_bridge_start(binding_token);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start MQTT bridge: %s", esp_err_to_name(err));
         return;
@@ -229,7 +245,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
         xTaskCreate(&check_ota_task, "ota_task", 8192, NULL, 5, NULL);
 
         // Start HomeKit and MQTT only after provisioning has completed and STA has IP.
-        start_smart_home_services_once();
+        start_smart_home_services_once(g_binding_token);
     }
 }
 
@@ -250,14 +266,14 @@ void start_ble_provisioning(void) {
 
     ESP_ERROR_CHECK(wifi_prov_scheme_ble_set_service_uuid((uint8_t *)PROV_SERVICE_UUID));
 
-    esp_err_t pop_err = get_or_create_pop(pop, sizeof(pop));
-    if (pop_err != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to load persisted PoP (%s). Using fallback PoP from MAC suffix.", esp_err_to_name(pop_err));
-        snprintf(pop, sizeof(pop), "%02X%02X%02X%02X", mac[2], mac[3], mac[4], mac[5]);
-    }
+    /* Strictly read the factory-flashed PoP — aborts if absent. */
+    ESP_ERROR_CHECK(get_pop_from_nvs(pop, sizeof(pop)));
 
     ESP_LOGI(TAG, "Provisioning identity: name=%s, service_uuid=%s", service_name, PROV_SERVICE_UUID_STR);
     ESP_LOGI(TAG, "Provisioning PoP: %s", pop);
+
+    /* Register the custom BLE endpoint to receive the Binding Token. */
+    wifi_prov_mgr_endpoint_register("custom-data", custom_data_handler, NULL);
 
     wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
     wifi_prov_mgr_start_provisioning(security, pop, service_name, NULL);

@@ -6,7 +6,7 @@
 extern "C" {
 #endif
 
-esp_err_t mqtt_bridge_start(void);
+esp_err_t mqtt_bridge_start(const char *binding_token);
 
 #ifdef __cplusplus
 }

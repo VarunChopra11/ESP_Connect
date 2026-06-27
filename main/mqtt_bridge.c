@@ -24,6 +24,7 @@ static esp_mqtt_client_handle_t s_client;
 static char s_cmd_topic[MQTT_TOPIC_MAX_LEN];
 static char s_state_topic[MQTT_TOPIC_MAX_LEN];
 static char s_client_id[MQTT_CLIENT_ID_LEN];
+static char s_binding_token[64] = {0};  /* Cleared after first successful registration */
 static bool s_connected;
 static bool s_started;
 
@@ -126,6 +127,41 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
         ESP_LOGI(TAG, "Connected to broker");
         esp_mqtt_client_subscribe(s_client, s_cmd_topic, 1);
         publish_all_states();
+
+        /* Device registration: publish binding token once on the first connection
+         * so the backend can securely link this MAC to the consumer's account.
+         * After publishing, clear the token to prevent re-registration on reconnects. */
+        if (strlen(s_binding_token) > 0) {
+            uint8_t mac[6];
+            if (esp_wifi_get_mac(WIFI_IF_STA, mac) == ESP_OK) {
+                /* Registration payload - MAC as 12 lowercase hex chars, no colons */
+                char reg_payload[192];
+                const int written = snprintf(
+                    reg_payload, sizeof(reg_payload),
+                    "{\"mac\":\"%02x%02x%02x%02x%02x%02x\","
+                    "\"binding_token\":\"%s\","
+                    "\"device_model\":\"4-switch-board\"}",
+                    mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                    s_binding_token
+                );
+                if (written > 0 && written < (int)sizeof(reg_payload)) {
+                    const int msg_id = esp_mqtt_client_publish(
+                        s_client, "smarthome/register", reg_payload, 0, 1, 0);
+                    if (msg_id >= 0) {
+                        ESP_LOGI(TAG, "Published device registration: %s", reg_payload);
+                    } else {
+                        ESP_LOGW(TAG, "Failed to queue device registration publish");
+                    }
+                } else {
+                    ESP_LOGE(TAG, "Registration payload truncated; not publishing");
+                }
+            } else {
+                ESP_LOGE(TAG, "Failed to read MAC for registration payload");
+            }
+            /* Clear token regardless of publish success to avoid re-registering
+             * on subsequent reconnects with a stale token. */
+            s_binding_token[0] = '\0';
+        }
         break;
     case MQTT_EVENT_DISCONNECTED:
         s_connected = false;
@@ -145,10 +181,24 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
     }
 }
 
-esp_err_t mqtt_bridge_start(void)
+esp_err_t mqtt_bridge_start(const char *binding_token)
 {
     if (s_started) {
         return ESP_OK;
+    }
+
+    /* Store the binding token so the MQTT event handler can publish it on
+     * the first successful connection.  An empty/NULL token is valid for
+     * normal (non-provisioning) reboots. */
+    if (binding_token && binding_token[0] != '\0') {
+        size_t copy_len = strlen(binding_token);
+        if (copy_len >= sizeof(s_binding_token)) {
+            copy_len = sizeof(s_binding_token) - 1;
+        }
+        memcpy(s_binding_token, binding_token, copy_len);
+        s_binding_token[copy_len] = '\0';
+    } else {
+        s_binding_token[0] = '\0';
     }
 
     uint8_t mac[6];
@@ -172,6 +222,10 @@ esp_err_t mqtt_bridge_start(void)
         },
         .credentials = {
             .client_id = s_client_id,
+            .username = CONFIG_MQTT_BROKER_USERNAME,
+            .authentication = {
+                .password = CONFIG_MQTT_BROKER_PASSWORD
+            }
         },
         .session = {
             .keepalive = 60,
