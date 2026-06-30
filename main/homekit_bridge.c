@@ -17,7 +17,7 @@ static const char *TAG = "HOMEKIT_BRIDGE";
 #define HOMEKIT_TASK_NAME        "homekit"
 #define HOMEKIT_TASK_STACK_SIZE  8192
 #define HOMEKIT_TASK_PRIORITY    4
-#define HOMEKIT_SETUP_CODE       "111-22-333"
+#define HOMEKIT_SETUP_CODE       "413-52-465"
 #define HOMEKIT_SETUP_ID         "ES32"
 #define SERVICE_PRIV(endpoint)   ((void *)(intptr_t)((endpoint) + 1))
 #define SERVICE_ENDPOINT(priv)   ((device_endpoint_t)((intptr_t)(priv) - 1))
@@ -226,7 +226,7 @@ static void homekit_task(void *arg)
     hap_add_accessory(accessory);
     hap_set_setup_code(HOMEKIT_SETUP_CODE);
     hap_set_setup_id(HOMEKIT_SETUP_ID);
-    hap_enable_mfi_auth(HAP_MFI_AUTH_HW);
+    hap_enable_mfi_auth(HAP_MFI_AUTH_NONE);
 
     if (device_state_manager_register_observer(state_observer, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register HomeKit state observer");

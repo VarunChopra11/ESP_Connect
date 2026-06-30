@@ -223,6 +223,17 @@ esp_err_t device_state_manager_set_power(device_endpoint_t endpoint, bool on, de
     if (changed) {
         ESP_LOGI(TAG, "%s -> %s", s_hw[endpoint].name, on ? "on" : "off");
         notify_observers(endpoint, on, source);
+    } else if (source == DEVICE_STATE_SOURCE_MQTT) {
+        /*
+         * The relay state is already correct, but Google Home requires that
+         * the device ALWAYS acknowledges every MQTT command with a state
+         * report — even when nothing changed.  Skipping the notification
+         * would leave the backend waiting for a confirmation that never
+         * arrives, causing the Google Home app to desynchronise.
+         */
+        ESP_LOGI(TAG, "%s already %s — re-publishing state for MQTT ack",
+                 s_hw[endpoint].name, on ? "on" : "off");
+        notify_observers(endpoint, on, source);
     }
     return ESP_OK;
 }

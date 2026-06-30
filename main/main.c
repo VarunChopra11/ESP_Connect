@@ -16,6 +16,7 @@
 #include "esp_https_ota.h"
 #include "esp_crt_bundle.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "cJSON.h"
 #include "device_state_manager.h"
 #include "homekit_bridge.h"
@@ -24,7 +25,6 @@
 static const char *TAG = "ESP_CORE";
 
 #define BUTTON_GPIO             GPIO_NUM_32  // Rarely conflicts, input/output capable
-#define FIRMWARE_VERSION        "1.0.0"
 #define OTA_CHECK_URL           "https://api.hellum.dev/smart_switch/check"
 #define PROV_DEVICE_NAME_PREFIX "PROV_"
 #define PROV_POP_NAMESPACE      "prov"
@@ -167,9 +167,14 @@ static esp_err_t custom_data_handler(uint32_t session_id,
         ESP_LOGI(TAG, "Binding Token received via BLE (%d bytes)", (int)copy_len);
     }
 
-    /* No response payload needed for this endpoint */
-    *outbuf  = NULL;
-    *outlen  = 0;
+    /* Protocomm requires a valid response buffer to encrypt and return.
+       The protocomm layer will call free() on this buffer after sending. */
+    const char *resp = "OK";
+    *outbuf = (uint8_t *)strdup(resp);
+    if (*outbuf == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    *outlen = strlen(resp);
     return ESP_OK;
 }
 
@@ -273,11 +278,14 @@ void start_ble_provisioning(void) {
     ESP_LOGI(TAG, "Provisioning identity: name=%s, service_uuid=%s", service_name, PROV_SERVICE_UUID_STR);
     ESP_LOGI(TAG, "Provisioning PoP: %s", pop);
 
-    /* Register the custom BLE endpoint to receive the Binding Token. */
-    wifi_prov_mgr_endpoint_register("custom-data", custom_data_handler, NULL);
+    /* 1. Create the endpoint in the BLE scheme BEFORE starting provisioning */
+    wifi_prov_mgr_endpoint_create("custom-data");
 
     wifi_prov_security_t security = WIFI_PROV_SECURITY_1;
     wifi_prov_mgr_start_provisioning(security, pop, service_name, NULL);
+
+    /* 2. Register the endpoint handler AFTER starting provisioning */
+    wifi_prov_mgr_endpoint_register("custom-data", custom_data_handler, NULL);
 }
 
 // --- Secure OTA Implementation ---
@@ -285,12 +293,14 @@ void check_ota_task(void *pvParameter) {
     uint8_t mac[6];
     esp_wifi_get_mac(WIFI_IF_STA, mac);
 
+    const esp_app_desc_t *app_desc = esp_app_get_description();
+
     char check_url[200];
     snprintf(check_url, sizeof(check_url),
              "%s?mac=%02x:%02x:%02x:%02x:%02x:%02x&ver=%s",
              OTA_CHECK_URL,
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
-             FIRMWARE_VERSION);
+             app_desc->version);
 
     esp_http_client_config_t config = {
         .url = check_url,
