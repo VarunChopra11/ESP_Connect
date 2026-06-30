@@ -1,9 +1,19 @@
 cmake_minimum_required(VERSION 3.16)
 
-if(DEFINED ENV{ESP_HOMEKIT_SDK_PATH})
+set(PROJECT_HOMEKIT_SDK_PATH "${CMAKE_CURRENT_LIST_DIR}/esp-homekit-sdk")
+
+if(EXISTS "${PROJECT_HOMEKIT_SDK_PATH}/components/homekit/esp_hap_core")
+    set(ESP_HOMEKIT_SDK_PATH "${PROJECT_HOMEKIT_SDK_PATH}")
+elseif(DEFINED ENV{ESP_HOMEKIT_SDK_PATH})
     set(ESP_HOMEKIT_SDK_PATH $ENV{ESP_HOMEKIT_SDK_PATH})
 else()
-    set(ESP_HOMEKIT_SDK_PATH "/home/varun/esp/esp-homekit-sdk")
+    set(ESP_HOMEKIT_SDK_PATH "${PROJECT_HOMEKIT_SDK_PATH}")
+endif()
+
+if(NOT EXISTS "${ESP_HOMEKIT_SDK_PATH}/components/homekit/esp_hap_core")
+    message(FATAL_ERROR
+        "ESP HomeKit SDK not found at ${ESP_HOMEKIT_SDK_PATH}. "
+        "Clone it into ${PROJECT_HOMEKIT_SDK_PATH} or set ESP_HOMEKIT_SDK_PATH.")
 endif()
 
 if(EXISTS "${ESP_HOMEKIT_SDK_PATH}/components")

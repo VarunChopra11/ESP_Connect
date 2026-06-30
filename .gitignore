@@ -27,6 +27,7 @@ Thumbs.db
 /build/
 /managed_components/
 dependencies.lock
+/esp-homekit-sdk/
 
 # Local generated project config (keep defaults under version control)
 /sdkconfig
